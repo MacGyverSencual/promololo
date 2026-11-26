@@ -174,6 +174,46 @@ def enviar_telegram(mensagem: str):
         print(f"Erro ao enviar Telegram: {e}")
 
 
+def verificar_comando_telegram(historico: dict) -> bool:
+    """
+    Verifica se você enviou alguma mensagem/comando (ex: /buscar) no chat do bot
+    desde a última execução.
+    """
+    ultimo_id = historico.get("_ultimo_update_id", 0)
+    url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/getUpdates"
+    try:
+        resp = requests.get(url, params={"offset": ultimo_id + 1, "timeout": 5}, timeout=10)
+        if not resp.ok:
+            return False
+
+        dados = resp.json()
+        updates = dados.get("result", [])
+        if not updates:
+            return False
+
+        maior_id = ultimo_id
+        solicitou_busca = False
+
+        for item in updates:
+            upd_id = item.get("update_id", 0)
+            if upd_id > maior_id:
+                maior_id = upd_id
+
+            msg = item.get("message") or item.get("edited_message") or {}
+            chat_id = str(msg.get("chat", {}).get("id", ""))
+            texto = (msg.get("text") or "").strip().lower()
+
+            # Aceita apenas comandos vindos da sua própria conta do Telegram
+            if chat_id == str(TELEGRAM_CHAT_ID) and texto:
+                solicitou_busca = True
+
+        historico["_ultimo_update_id"] = maior_id
+        return solicitou_busca
+    except Exception as e:
+        print(f"Erro ao checar comandos no Telegram: {e}")
+        return False
+
+
 def carregar_historico() -> dict:
     if os.path.exists(ARQUIVO_HISTORICO):
         try:
@@ -422,6 +462,11 @@ def executar_monitoramento():
     historico = carregar_historico()
     agora = datetime.now(timezone(timedelta(hours=-3)))
     execucao_manual = os.environ.get("GITHUB_EVENT_NAME") == "workflow_dispatch"
+    pedido_telegram = verificar_comando_telegram(historico)
+
+    if pedido_telegram:
+        enviar_telegram("🔎 <b>Pedido recebido!</b> Varrendo as lojas agora, aguarde ~1 minuto...")
+
     melhores_precos = {}
     novos_alertas = []
 
@@ -502,18 +547,21 @@ def executar_monitoramento():
     for alerta in novos_alertas:
         enviar_telegram(alerta)
 
-    # 2. Envia confirmação imediata se foi um teste manual (Run workflow) ou resumo 2x ao dia (09h e 21h)
+    # 2. Envia o relatório completo se foi teste manual, pedido pelo Telegram (/buscar) ou resumo das 09h/21h
     chave_resumo = agora.strftime("%Y-%m-%d-%H")
     enviar_status_agendado = agora.hour in (9, 21) and historico.get("_ultimo_resumo") != chave_resumo
 
-    if execucao_manual or enviar_status_agendado:
+    if execucao_manual or pedido_telegram or enviar_status_agendado:
         if enviar_status_agendado:
             historico["_ultimo_resumo"] = chave_resumo
-        titulo_msg = (
-            "✅ <b>Promololo — Teste concluído com sucesso!</b>"
-            if execucao_manual
-            else f"📡 <b>Promololo — Status ({agora.strftime('%d/%m %H:%M')})</b>"
-        )
+
+        if pedido_telegram:
+            titulo_msg = "🔎 <b>Promololo — Resultado da sua busca sob demanda</b>"
+        elif execucao_manual:
+            titulo_msg = "✅ <b>Promololo — Teste concluído com sucesso!</b>"
+        else:
+            titulo_msg = f"📡 <b>Promololo — Status ({agora.strftime('%d/%m %H:%M')})</b>"
+
         linhas = [f"{titulo_msg}\n🎯 Alvo configurado: <b>R$ {PRECO_ALVO:,.2f}</b> ou menos\n"]
         if melhores_precos:
             for cat, info in melhores_precos.items():
@@ -523,7 +571,7 @@ def executar_monitoramento():
                     f"  🔗 <a href='{info['url']}'>Ver oferta</a>"
                 )
         else:
-            linhas.append("Conexão com o Telegram funcionando! Nenhuma placa em estoque foi lida nesta rodada.")
+            linhas.append("Nenhuma placa em estoque foi lida nesta rodada.")
         enviar_telegram("\n".join(linhas))
 
     salvar_historico(historico)
