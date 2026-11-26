@@ -17,6 +17,26 @@ ARQUIVO_HISTORICO = "alertas_enviados.json"
 HORAS_COOLDOWN_ALERTA = 24       # Não repete o mesmo alerta por 24h (a menos que o preço caia mais)
 
 FONTES = [
+    # Links diretos específicos (KaBuM!)
+    {
+        "loja": "KaBuM! (Link Direto)",
+        "tipo": "kabum_produto",
+        "base_url": "https://www.kabum.com.br",
+        "url": "https://www.kabum.com.br/produto/870975"
+    },
+    # KaBuM! (Buscas gerais)
+    {
+        "loja": "KaBuM!",
+        "tipo": "kabum",
+        "base_url": "https://www.kabum.com.br",
+        "url": "https://www.kabum.com.br/busca/rx-9060-xt"
+    },
+    {
+        "loja": "KaBuM!",
+        "tipo": "kabum",
+        "base_url": "https://www.kabum.com.br",
+        "url": "https://www.kabum.com.br/busca/rtx-5060-ti"
+    },
     # TerabyteShop
     {
         "loja": "TerabyteShop",
@@ -81,19 +101,6 @@ FONTES = [
         "tipo": "generico_loja",
         "base_url": "https://www.guerradigital.com.br",
         "url": "https://www.guerradigital.com.br/busca?busca=rtx+5060+ti+16gb"
-    },
-    # KaBuM!
-    {
-        "loja": "KaBuM!",
-        "tipo": "kabum",
-        "base_url": "https://www.kabum.com.br",
-        "url": "https://www.kabum.com.br/busca/placa-de-video-rx-9060-xt-16gb"
-    },
-    {
-        "loja": "KaBuM!",
-        "tipo": "kabum",
-        "base_url": "https://www.kabum.com.br",
-        "url": "https://www.kabum.com.br/busca/placa-de-video-rtx-5060-ti-16gb"
     },
     # Amazon Brasil
     {
@@ -241,7 +248,52 @@ def coletar_ofertas(pagina, fonte: dict) -> list[dict]:
     pagina.goto(fonte["url"], timeout=30000, wait_until="domcontentloaded")
     pagina.wait_for_timeout(2500)
 
-    if tipo == "terabyte":
+    if tipo == "kabum_produto":
+        titulo_el = pagina.locator("h1").first
+        titulo = titulo_el.inner_text().strip() if titulo_el.count() else ""
+        corpo_topo = pagina.locator("main").first.inner_text() if pagina.locator("main").count() else ""
+
+        tem_botao_comprar = pagina.locator('button:has-text("COMPRAR"), button:has-text("Comprar")').count() > 0
+        indisponivel = "produto indisponível" in corpo_topo.lower() or "avise-me quando chegar" in corpo_topo.lower()
+
+        if titulo and tem_botao_comprar and not indisponivel:
+            preco_el = pagina.locator('h4.finalPrice, [class*="finalPrice"]').first
+            texto_preco = preco_el.inner_text().strip() if preco_el.count() else ""
+            if texto_preco:
+                ofertas.append({
+                    "loja": loja,
+                    "titulo": titulo,
+                    "texto": texto_preco,
+                    "url": fonte["url"],
+                })
+
+    elif tipo == "kabum":
+        cards = pagina.locator("article.productCard")
+        if cards.count() == 0:
+            cards = pagina.locator("a[href*='/produto/']")
+        total = min(cards.count(), 25)
+        for i in range(total):
+            el = cards.nth(i)
+            texto = el.inner_text()
+            link_el = el if el.get_attribute("href") else el.locator("a[href*='/produto/']").first
+            href = link_el.get_attribute("href") if link_el.count() else None
+            titulo_el = el.locator("span.nameCard, h2, h3").first
+            if titulo_el.count():
+                titulo = titulo_el.inner_text().strip()
+            else:
+                linhas = [
+                    l.strip() for l in texto.split("\n")
+                    if len(l.strip()) > 15 and "R$" not in l and "%" not in l and "FRETE" not in l.upper()
+                ]
+                titulo = max(linhas, key=len) if linhas else ""
+            ofertas.append({
+                "loja": loja,
+                "titulo": titulo,
+                "texto": texto,
+                "url": normalizar_link(href, base_url, fonte["url"]),
+            })
+
+    elif tipo == "terabyte":
         cards = pagina.locator(".pbox, .commerce_columns_item_inner")
         total = min(cards.count(), 25)
         for i in range(total):
@@ -266,23 +318,6 @@ def coletar_ofertas(pagina, fonte: dict) -> list[dict]:
             href = el.get_attribute("href")
             titulo_el = el.locator("h2, h3").first
             titulo = titulo_el.inner_text().strip() if titulo_el.count() else texto.split("\n")[0]
-            ofertas.append({
-                "loja": loja,
-                "titulo": titulo,
-                "texto": texto,
-                "url": normalizar_link(href, base_url, fonte["url"]),
-            })
-
-    elif tipo == "kabum":
-        cards = pagina.locator("article.productCard, a[href*='/produto/']")
-        total = min(cards.count(), 25)
-        for i in range(total):
-            el = cards.nth(i)
-            texto = el.inner_text()
-            link_el = el if el.get_attribute("href") else el.locator("a[href*='/produto/']").first
-            href = link_el.get_attribute("href") if link_el.count() else None
-            linhas = [l.strip() for l in texto.split("\n") if len(l.strip()) > 12]
-            titulo = linhas[0] if linhas else ""
             ofertas.append({
                 "loja": loja,
                 "titulo": titulo,
